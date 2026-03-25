@@ -8,14 +8,11 @@ from flask import Flask, request
 from datetime import datetime
 import asyncio
 
-# --- CONFIGURACIÓN ---
 TOKEN = os.environ.get("TELEGRAM_TOKEN")
 WEBHOOK_URL = "https://contador-marcos.onrender.com"
 
-# --- FLASK ---
 flask_app = Flask(__name__)
 
-# --- GOOGLE SHEETS ---
 def get_hoja():
     scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
     creds_dict = json.loads(os.environ.get("GOOGLE_CREDS"))
@@ -23,7 +20,6 @@ def get_hoja():
     client = gspread.authorize(creds)
     return client.open("Finanzas Marcos").worksheet("Movimientos")
 
-# --- COMANDOS ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "¡Hola Marcos! Soy tu Contador Virtual 🧮\n\n"
@@ -122,7 +118,18 @@ async def boton_servicios(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mensaje_desconocido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
-# --- WEBHOOK ENDPOINT ---
+def get_telegram_app():
+    app = Application.builder().token(TOKEN).updater(None).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("sueldo", sueldo))
+    app.add_handler(CommandHandler("gasto", gasto))
+    app.add_handler(CommandHandler("balance", balance))
+    app.add_handler(CommandHandler("servicios", servicios))
+    app.add_handler(CommandHandler("consejo", consejo))
+    app.add_handler(CallbackQueryHandler(boton_servicios))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje_desconocido))
+    return app
+
 @flask_app.route(f"/{TOKEN}", methods=["POST"])
 async def webhook():
     app = get_telegram_app()
@@ -136,20 +143,6 @@ async def webhook():
 def index():
     return "Bot activo ✅", 200
 
-# --- CREAR APP DE TELEGRAM ---
-def get_telegram_app():
-    app = Application.builder().token(TOKEN).updater(None).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("sueldo", sueldo))
-    app.add_handler(CommandHandler("gasto", gasto))
-    app.add_handler(CommandHandler("balance", balance))
-    app.add_handler(CommandHandler("servicios", servicios))
-    app.add_handler(CommandHandler("consejo", consejo))
-    app.add_handler(CallbackQueryHandler(boton_servicios))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje_desconocido))
-    return app
-
-# --- CONFIGURAR WEBHOOK AL INICIAR ---
 async def set_webhook():
     app = get_telegram_app()
     async with app:
@@ -162,10 +155,3 @@ async def set_webhook():
 if __name__ == "__main__":
     asyncio.run(set_webhook())
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
-```
-
----
-
-## En Render cambiá el Start Command a:
-```
-gunicorn bot:flask_app
