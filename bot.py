@@ -1,11 +1,19 @@
 import os
 import json
-import asyncio
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from flask import Flask, request
 from datetime import datetime
+import asyncio
+
+# --- CONFIGURACIÓN ---
+TOKEN = os.environ.get("TELEGRAM_TOKEN")
+WEBHOOK_URL = "https://contador-marcos.onrender.com"
+
+# --- FLASK ---
+flask_app = Flask(__name__)
 
 # --- GOOGLE SHEETS ---
 def get_hoja():
@@ -93,11 +101,10 @@ async def consejo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     disponible = total_sueldo - total_gastos
     if disponible > 150000:
         texto = (f"👨‍💼 TU ASESOR FINANCIERO 👨‍💼\n\n💰 Saldo: ${disponible:,.0f}\n\n"
-                 f"💡 Consejo: Te sobró un buen margen. Pasá ${disponible*0.6:,.0f} a Mercado Pago "
-                 f"o Personal Pay para ganar intereses diarios. Con lo que quede, evaluá comprar Dólar MEP.")
+                 f"💡 Pasá ${disponible*0.6:,.0f} a Mercado Pago o Personal Pay para ganar intereses diarios. Con lo que quede, evaluá comprar Dólar MEP.")
     elif disponible > 0:
         texto = (f"👨‍💼 TU ASESOR FINANCIERO 👨‍💼\n\n💰 Saldo: ${disponible:,.0f}\n\n"
-                 f"💡 Consejo: Estás en positivo pero ajustado. Dejá esa plata en tu billetera virtual remunerada hasta el próximo gasto grande.")
+                 f"💡 Estás en positivo pero ajustado. Dejá esa plata en tu billetera virtual remunerada hasta el próximo gasto grande.")
     else:
         texto = (f"👨‍💼 TU ASESOR FINANCIERO 👨‍💼\n\n💰 Saldo: ${disponible:,.0f}\n\n"
                  f"⚠️ ¡Ojo, Marcos! Estás en rojo. Revisá el Excel y cortá los gastos hormiga.")
@@ -115,11 +122,23 @@ async def boton_servicios(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def mensaje_desconocido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
 
-# --- MAIN ---
-def main():
-    token = os.environ.get("TELEGRAM_TOKEN")
-    app = Application.builder().token(token).build()
+# --- WEBHOOK ENDPOINT ---
+@flask_app.route(f"/{TOKEN}", methods=["POST"])
+async def webhook():
+    app = get_telegram_app()
+    data = request.get_json()
+    async with app:
+        update = Update.de_json(data, app.bot)
+        await app.process_update(update)
+    return "OK", 200
 
+@flask_app.route("/", methods=["GET"])
+def index():
+    return "Bot activo ✅", 200
+
+# --- CREAR APP DE TELEGRAM ---
+def get_telegram_app():
+    app = Application.builder().token(TOKEN).updater(None).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("sueldo", sueldo))
     app.add_handler(CommandHandler("gasto", gasto))
@@ -128,9 +147,25 @@ def main():
     app.add_handler(CommandHandler("consejo", consejo))
     app.add_handler(CallbackQueryHandler(boton_servicios))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje_desconocido))
+    return app
 
-    print("Bot iniciado...")
-    app.run_polling()
+# --- CONFIGURAR WEBHOOK AL INICIAR ---
+async def set_webhook():
+    app = get_telegram_app()
+    async with app:
+        await app.bot.set_webhook(
+            url=f"{WEBHOOK_URL}/{TOKEN}",
+            drop_pending_updates=True
+        )
+    print(f"Webhook configurado: {WEBHOOK_URL}/{TOKEN}")
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(set_webhook())
+    flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+```
+
+---
+
+## En Render cambiá el Start Command a:
+```
+gunicorn bot:flask_app
