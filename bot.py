@@ -5,7 +5,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask, request
-from datetime import datetime
+from datetime import datetime, timedelta
 import asyncio
 import threading
 import time
@@ -23,8 +23,11 @@ def get_hoja(nombre="Movimientos"):
     client = gspread.authorize(creds)
     return client.open("Finanzas Marcos").worksheet(nombre)
 
-SERVICIOS_LISTA = ["Luz", "Agua", "Gas", "Internet", "Tarjeta", "Alquiler", "Expensas", "Celular"]
 MEDIOS_PAGO = ["Mercado Pago", "Naranja X", "Personal Pay", "Efectivo"]
+TIPOS_AUTO = ["Nafta", "GNC", "Aceite", "VTV", "Oblea Gas", "Seguro", "Patente", "Parche/Rueda", "Repuesto", "Service", "Peaje/Estacionamiento", "Otro"]
+CATEGORIAS_COMIDA = ["Supermercado", "Panadería", "Almacén", "Pollería", "Carnicería", "Verdulería", "Kiosco", "Delivery", "Restaurante", "Cafetería", "Mercado Libre"]
+SERVICIOS_LISTA = ["Luz", "Agua", "Gas", "Internet", "Tarjeta", "Alquiler", "Expensas", "Celular"]
+LIMITE_COMIDA = 150000
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
@@ -37,11 +40,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "👉 /consejo\n"
         "👉 /corregir\n\n"
         "🔔 <b>Servicios:</b>\n"
-        "👉 /servicios — ver estado de boletas\n"
+        "👉 /servicios\n"
         "👉 /nuevo_servicio [servicio] [DD/MM/AAAA] [monto]\n"
-        "    Ejemplo: /nuevo_servicio Luz 15/04/2026 25000\n\n"
-        "👉 /pagar [servicio] [medio] [comprobante]\n"
-        "    Ejemplo: /pagar Luz MercadoPago 12345678",
+        "👉 /pagar [servicio] [medio] [comprobante]\n\n"
+        "🚗 <b>Auto:</b>\n"
+        "👉 /auto\n"
+        "👉 /gasto_auto [tipo] [monto] [medio] [detalle]\n"
+        "👉 /vencimiento_auto [tipo] [DD/MM/AAAA]\n\n"
+        "🛒 <b>Comida:</b>\n"
+        "👉 /comida\n"
+        "👉 /gasto_comida [categoría] [monto] [medio] [detalle]\n"
+        "    Ejemplo: /gasto_comida Supermercado 15000 Efectivo compras semana\n\n"
+        "Categorías: " + ", ".join(CATEGORIAS_COMIDA),
         parse_mode="HTML"
     )
 
@@ -76,13 +86,41 @@ async def balance(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     disponible = total_sueldo - total_gastos
-    await update.message.reply_text(
+
+    # Gastos comida este mes
+    mes_actual = datetime.now().strftime("%m/%Y")
+    datos_comida = get_hoja("Comida").get_all_values()
+    total_comida_mes = 0
+    for fila in datos_comida[1:]:
+        try:
+            mes_fila = fila[0][3:10]
+            if mes_fila == mes_actual:
+                total_comida_mes += float(fila[2])
+        except:
+            pass
+
+    # Gastos auto este mes
+    datos_auto = get_hoja("Auto").get_all_values()
+    total_auto_mes = 0
+    for fila in datos_auto[1:]:
+        try:
+            mes_fila = fila[0][3:10]
+            if mes_fila == mes_actual:
+                total_auto_mes += float(fila[2])
+        except:
+            pass
+
+    texto = (
         f"📊 <b>BALANCE ACTUAL</b> 📊\n\n"
         f"🟢 Ingresos: ${total_sueldo:,.0f}\n"
-        f"🔴 Gastos: ${total_gastos:,.0f}\n\n"
-        f"💰 <b>Disponible: ${disponible:,.0f}</b>",
-        parse_mode="HTML"
+        f"🔴 Gastos generales: ${total_gastos:,.0f}\n\n"
+        f"🛒 Comida este mes: ${total_comida_mes:,.0f}\n"
+        f"🚗 Auto este mes: ${total_auto_mes:,.0f}\n\n"
+        f"💰 <b>Disponible: ${disponible:,.0f}</b>"
     )
+    if total_comida_mes >= LIMITE_COMIDA:
+        texto += f"\n\n⚠️ <b>¡Superaste el límite de comida!</b> (${LIMITE_COMIDA:,.0f}/mes)"
+    await update.message.reply_text(texto, parse_mode="HTML")
 
 async def consejo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     datos = get_hoja().get_all_values()
@@ -98,6 +136,20 @@ async def consejo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
     disponible = total_sueldo - total_gastos
+    mes_actual = datetime.now().strftime("%m/%Y")
+    datos_comida = get_hoja("Comida").get_all_values()
+    total_comida_mes = 0
+    cat_gastos = {}
+    for fila in datos_comida[1:]:
+        try:
+            mes_fila = fila[0][3:10]
+            if mes_fila == mes_actual:
+                monto = float(fila[2])
+                total_comida_mes += monto
+                cat = fila[1]
+                cat_gastos[cat] = cat_gastos.get(cat, 0) + monto
+        except:
+            pass
     if disponible > 150000:
         texto = (f"👨‍💼 <b>TU ASESOR FINANCIERO</b> 👨‍💼\n\n💰 Saldo: ${disponible:,.0f}\n\n"
                  f"💡 Pasá ${disponible*0.6:,.0f} a Mercado Pago o Personal Pay para ganar intereses diarios.")
@@ -107,15 +159,247 @@ async def consejo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         texto = (f"👨‍💼 <b>TU ASESOR FINANCIERO</b> 👨‍💼\n\n💰 Saldo: ${disponible:,.0f}\n\n"
                  f"⚠️ ¡Ojo, Marcos! Estás en rojo. Revisá el Excel y cortá los gastos hormiga.")
+    if cat_gastos:
+        top = sorted(cat_gastos.items(), key=lambda x: x[1], reverse=True)[:3]
+        texto += f"\n\n🛒 <b>Top 3 gastos de comida este mes:</b>\n"
+        for cat, monto in top:
+            texto += f"• {cat}: ${monto:,.0f}\n"
+    if total_comida_mes >= LIMITE_COMIDA:
+        texto += f"\n⚠️ <b>¡Cuidado!</b> Llevás ${total_comida_mes:,.0f} en comida este mes."
     await update.message.reply_text(texto, parse_mode="HTML")
 
+# --- COMIDA ---
+async def gasto_comida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Usá: /gasto_comida [categoría] [monto] [medio] [detalle]\n"
+            "Ejemplo: /gasto_comida Supermercado 15000 Efectivo compras semana\n\n"
+            "Categorías: " + ", ".join(CATEGORIAS_COMIDA)
+        )
+        return
+    categoria = context.args[0].capitalize()
+    try:
+        monto = float(context.args[1])
+    except:
+        await update.message.reply_text("❌ El monto debe ser un número. Ejemplo: 15000")
+        return
+    medio = context.args[2] if len(context.args) > 2 else "Efectivo"
+    detalle = " ".join(context.args[3:]) if len(context.args) > 3 else ""
+    fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M")
+    get_hoja("Comida").append_row([fecha_hoy, categoria, monto, medio, detalle])
+    get_hoja().append_row([fecha_hoy, "Gasto", monto, categoria])
+
+    # Chequear límite mensual
+    mes_actual = datetime.now().strftime("%m/%Y")
+    datos_comida = get_hoja("Comida").get_all_values()
+    total_mes = 0
+    for fila in datos_comida[1:]:
+        try:
+            mes_fila = fila[0][3:10]
+            if mes_fila == mes_actual:
+                total_mes += float(fila[2])
+        except:
+            pass
+
+    respuesta = (
+        f"🛒 <b>Gasto de comida registrado</b>\n\n"
+        f"📌 {categoria}\n"
+        f"💰 ${monto:,.0f}\n"
+        f"💳 {medio}\n"
+    )
+    if detalle:
+        respuesta += f"📝 {detalle}\n"
+    respuesta += f"\n📊 Total comida este mes: ${total_mes:,.0f}"
+    if total_mes >= LIMITE_COMIDA:
+        respuesta += f"\n⚠️ <b>¡Superaste el límite de ${LIMITE_COMIDA:,.0f}!</b>"
+    elif total_mes >= LIMITE_COMIDA * 0.8:
+        respuesta += f"\n⚠️ Vas por el 80% del límite mensual de comida."
+    await update.message.reply_text(respuesta, parse_mode="HTML")
+
+async def comida(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    datos = get_hoja("Comida").get_all_values()
+    if len(datos) <= 1:
+        await update.message.reply_text(
+            "🛒 No tenés gastos de comida registrados.\n\n"
+            "Usá: /gasto_comida Supermercado 15000 Efectivo"
+        )
+        return
+    mes_actual = datetime.now().strftime("%m/%Y")
+    cat_gastos = {}
+    total_mes = 0
+    ultimos = []
+    for fila in datos[1:]:
+        try:
+            mes_fila = fila[0][3:10]
+            if mes_fila == mes_actual:
+                monto = float(fila[2])
+                cat = fila[1]
+                total_mes += monto
+                cat_gastos[cat] = cat_gastos.get(cat, 0) + monto
+            ultimos.append(fila)
+        except:
+            pass
+    texto = f"🛒 <b>GASTOS DE COMIDA</b> — {mes_actual}\n\n"
+    texto += f"💰 <b>Total del mes: ${total_mes:,.0f}</b>"
+    if total_mes >= LIMITE_COMIDA:
+        texto += f" ⚠️ ¡Límite superado!"
+    elif total_mes >= LIMITE_COMIDA * 0.8:
+        texto += f" ⚠️ Cerca del límite"
+    texto += f"\n📊 Límite mensual: ${LIMITE_COMIDA:,.0f}\n\n"
+    texto += "<b>Por categoría:</b>\n"
+    for cat, monto in sorted(cat_gastos.items(), key=lambda x: x[1], reverse=True):
+        barra = "█" * int(monto / LIMITE_COMIDA * 10)
+        texto += f"• {cat}: ${monto:,.0f} {barra}\n"
+    texto += "\n<b>Últimos 5 gastos:</b>\n"
+    for fila in ultimos[-5:]:
+        try:
+            texto += f"• {fila[1]}: ${float(fila[2]):,.0f} — {fila[4]} ({fila[0][:10]})\n"
+        except:
+            pass
+    await update.message.reply_text(texto, parse_mode="HTML")
+
+# --- AUTO ---
+async def auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    hoja_auto = get_hoja("Auto")
+    datos = hoja_auto.get_all_values()
+    datos_mov = get_hoja().get_all_values()
+    mes_actual = datetime.now().strftime("%m/%Y")
+    total_auto_mes = 0
+    total_sueldo = 0
+    for fila in datos_mov[1:]:
+        try:
+            mes_fila = fila[0][3:10]
+            valor = float(fila[2])
+            if fila[1] == "Sueldo":
+                total_sueldo += valor
+            if fila[1] == "Gasto" and fila[3] in TIPOS_AUTO and mes_fila == mes_actual:
+                total_auto_mes += valor
+        except:
+            pass
+    porcentaje = (total_auto_mes / total_sueldo * 100) if total_sueldo > 0 else 0
+    texto = "🚗 <b>RESUMEN DEL AUTO</b> 🚗\n\n"
+    texto += f"💸 Gastado este mes: ${total_auto_mes:,.0f}\n"
+    if total_sueldo > 0:
+        texto += f"📊 {porcentaje:.1f}% del sueldo\n"
+        if porcentaje > 30:
+            texto += "⚠️ <i>Estás gastando mucho en el auto</i>\n"
+    texto += "\n📅 <b>VENCIMIENTOS</b>\n\n"
+    vencimientos = {}
+    if len(datos) > 1:
+        for fila in datos[1:]:
+            try:
+                tipo = fila[1]
+                prox = fila[5] if len(fila) > 5 else ""
+                if prox and not prox.startswith("Próximo") and tipo not in vencimientos:
+                    vencimientos[tipo] = prox
+            except:
+                pass
+    for tipo in ["VTV", "Oblea Gas", "Seguro", "Patente", "Aceite"]:
+        if tipo in vencimientos:
+            fecha_str = vencimientos[tipo]
+            try:
+                fecha = datetime.strptime(fecha_str, "%d/%m/%Y")
+                dias = (fecha - datetime.now()).days
+                if dias < 0:
+                    emoji = "🔴"
+                    estado = "¡VENCIDO!"
+                elif dias <= 7:
+                    emoji = "🚨"
+                    estado = f"vence en {dias} días"
+                elif dias <= 30:
+                    emoji = "⚠️"
+                    estado = f"vence en {dias} días"
+                else:
+                    emoji = "✅"
+                    estado = f"vence el {fecha_str}"
+                texto += f"{emoji} <b>{tipo}:</b> {estado}\n"
+            except:
+                texto += f"📌 <b>{tipo}:</b> {fecha_str}\n"
+        else:
+            texto += f"❓ <b>{tipo}:</b> sin fecha cargada\n"
+    texto += "\n📋 <b>ÚLTIMOS GASTOS</b>\n"
+    for fila in (datos[1:][-5:] if len(datos) > 1 else []):
+        try:
+            texto += f"• {fila[1]}: ${float(fila[2]):,.0f} — {fila[4]} ({fila[0][:10]})\n"
+        except:
+            pass
+    texto += (
+        "\n💡 <b>COMANDOS</b>\n"
+        "/gasto_auto [tipo] [monto] [medio] [detalle]\n"
+        "/vencimiento_auto [tipo] [DD/MM/AAAA]\n\n"
+        "Tipos: " + ", ".join(TIPOS_AUTO)
+    )
+    await update.message.reply_text(texto, parse_mode="HTML")
+
+async def gasto_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 3:
+        await update.message.reply_text(
+            "❌ Usá: /gasto_auto [tipo] [monto] [medio] [detalle]\n"
+            "Ejemplo: /gasto_auto Nafta 15000 Efectivo cargué full\n\n"
+            "Tipos: " + ", ".join(TIPOS_AUTO)
+        )
+        return
+    tipo = context.args[0].capitalize()
+    try:
+        monto = float(context.args[1])
+    except:
+        await update.message.reply_text("❌ El monto debe ser un número.")
+        return
+    medio = context.args[2]
+    detalle = " ".join(context.args[3:]) if len(context.args) > 3 else ""
+    prox_venc = "Próximo en 10.000 km" if tipo == "Aceite" else ""
+    fecha_hoy = datetime.now().strftime("%d/%m/%Y %H:%M")
+    get_hoja("Auto").append_row([fecha_hoy, tipo, monto, medio, detalle, prox_venc])
+    get_hoja().append_row([fecha_hoy, "Gasto", monto, tipo])
+    respuesta = (
+        f"🚗 <b>Gasto del auto registrado</b>\n\n"
+        f"🔧 {tipo} | 💰 ${monto:,.0f} | 💳 {medio}\n"
+    )
+    if detalle:
+        respuesta += f"📝 {detalle}\n"
+    if tipo in ["Aceite", "VTV", "Seguro", "Oblea Gas", "Patente"]:
+        respuesta += f"\n⏰ No te olvides de cargar el vencimiento:\n<code>/vencimiento_auto {tipo} DD/MM/AAAA</code>"
+    await update.message.reply_text(respuesta, parse_mode="HTML")
+
+async def vencimiento_auto(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Usá: /vencimiento_auto [tipo] [DD/MM/AAAA]\n"
+            "Ejemplo: /vencimiento_auto VTV 30/06/2026"
+        )
+        return
+    tipo = context.args[0].capitalize()
+    if tipo == "Gas":
+        tipo = "Oblea Gas"
+    fecha_str = context.args[1]
+    try:
+        fecha = datetime.strptime(fecha_str, "%d/%m/%Y")
+    except:
+        await update.message.reply_text("❌ Fecha incorrecta. Usá DD/MM/AAAA")
+        return
+    hoja = get_hoja("Auto")
+    datos = hoja.get_all_values()
+    actualizado = False
+    for i, fila in enumerate(datos[1:], start=2):
+        if fila[1].lower() == tipo.lower():
+            hoja.update_cell(i, 6, fecha_str)
+            actualizado = True
+            break
+    if not actualizado:
+        hoja.append_row([datetime.now().strftime("%d/%m/%Y %H:%M"), tipo, 0, "", "Vencimiento", fecha_str])
+    dias = (fecha - datetime.now()).days
+    estado = "⚠️ ¡Ya vencido!" if dias < 0 else f"⚠️ Vence en {dias} días" if dias <= 30 else f"✅ Faltan {dias} días"
+    await update.message.reply_text(
+        f"📅 <b>Vencimiento registrado</b>\n\n🔧 {tipo}: {fecha_str}\n{estado}",
+        parse_mode="HTML"
+    )
+
+# --- SERVICIOS ---
 async def nuevo_servicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 3:
         await update.message.reply_text(
-            "❌ Formato incorrecto.\n\n"
-            "Usá: /nuevo_servicio [servicio] [DD/MM/AAAA] [monto]\n"
-            "Ejemplo: /nuevo_servicio Luz 15/04/2026 25000\n\n"
-            "Servicios disponibles:\n" + ", ".join(SERVICIOS_LISTA)
+            "❌ Usá: /nuevo_servicio [servicio] [DD/MM/AAAA] [monto]\n"
+            "Ejemplo: /nuevo_servicio Luz 15/04/2026 25000"
         )
         return
     servicio = context.args[0].capitalize()
@@ -123,23 +407,18 @@ async def nuevo_servicio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         datetime.strptime(fecha_str, "%d/%m/%Y")
     except:
-        await update.message.reply_text("❌ Fecha incorrecta. Usá formato DD/MM/AAAA\nEjemplo: 15/04/2026")
+        await update.message.reply_text("❌ Fecha incorrecta. Usá DD/MM/AAAA")
         return
     try:
         monto = float(context.args[2])
     except:
-        await update.message.reply_text("❌ Monto incorrecto. Usá solo números.\nEjemplo: 25000")
+        await update.message.reply_text("❌ Monto incorrecto.")
         return
-    hoja = get_hoja("Servicios")
-    hoja.append_row([servicio, fecha_str, monto, "", "Pendiente", "", ""])
+    get_hoja("Servicios").append_row([servicio, fecha_str, monto, "", "Pendiente", "", ""])
     await update.message.reply_text(
         f"✅ <b>Servicio cargado</b>\n\n"
-        f"📌 {servicio}\n"
-        f"📅 Vence: {fecha_str}\n"
-        f"💰 Monto: ${monto:,.0f}\n"
-        f"📊 Estado: Pendiente\n\n"
-        f"Cuando lo pagues usá:\n"
-        f"<code>/pagar {servicio} MercadoPago 12345678</code>",
+        f"📌 {servicio} | 📅 {fecha_str} | 💰 ${monto:,.0f}\n\n"
+        f"Cuando lo pagues: <code>/pagar {servicio} MercadoPago 12345678</code>",
         parse_mode="HTML"
     )
 
@@ -148,8 +427,7 @@ async def servicios(update: Update, context: ContextTypes.DEFAULT_TYPE):
     datos = hoja.get_all_values()
     if len(datos) <= 1:
         await update.message.reply_text(
-            "📋 No tenés servicios cargados todavía.\n\n"
-            "Usá: /nuevo_servicio Luz 15/04/2026 25000"
+            "📋 No tenés servicios cargados.\n\nUsá: /nuevo_servicio Luz 15/04/2026 25000"
         )
         return
     texto = "📋 <b>TUS SERVICIOS</b>\n\n"
@@ -161,15 +439,11 @@ async def servicios(update: Update, context: ContextTypes.DEFAULT_TYPE):
             monto = fila[2]
             estado = fila[4] if len(fila) > 4 else "Pendiente"
             medio = fila[3] if len(fila) > 3 else ""
-            comprobante = fila[5] if len(fila) > 5 else ""
             fecha_pago = fila[6] if len(fila) > 6 else ""
             emoji = "✅" if estado == "Pagado" else "⏳"
-            texto += f"{emoji} <b>{servicio}</b>\n"
-            texto += f"   📅 Vence: {vencimiento} | 💰 ${monto}\n"
+            texto += f"{emoji} <b>{servicio}</b> — {vencimiento} | ${monto}\n"
             if estado == "Pagado":
-                texto += f"   💳 Pagado con {medio} el {fecha_pago}\n"
-                if comprobante:
-                    texto += f"   📎 Comprobante: {comprobante}\n"
+                texto += f"   💳 {medio} el {fecha_pago}\n"
             texto += "\n"
             if estado != "Pagado":
                 keyboard.append([InlineKeyboardButton(
@@ -178,15 +452,16 @@ async def servicios(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 )])
         except:
             pass
-    await update.message.reply_text(texto, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
+    await update.message.reply_text(
+        texto, parse_mode="HTML",
+        reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None
+    )
 
 async def pagar_servicio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if len(context.args) < 2:
         await update.message.reply_text(
-            "❌ Formato incorrecto.\n\n"
-            "Usá: /pagar [servicio] [medio] [comprobante]\n"
-            "Ejemplo: /pagar Luz MercadoPago 12345678\n\n"
-            "Medios: " + ", ".join(MEDIOS_PAGO)
+            "❌ Usá: /pagar [servicio] [medio] [comprobante]\n"
+            "Ejemplo: /pagar Luz MercadoPago 12345678"
         )
         return
     servicio = context.args[0].capitalize()
@@ -194,36 +469,63 @@ async def pagar_servicio_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE)
     comprobante = " ".join(context.args[2:]) if len(context.args) > 2 else "Sin comprobante"
     hoja = get_hoja("Servicios")
     datos = hoja.get_all_values()
-    encontrado = False
     for i, fila in enumerate(datos[1:], start=2):
         if fila[0].lower() == servicio.lower() and (len(fila) <= 4 or fila[4] != "Pagado"):
+            monto = fila[2]
             hoja.update_cell(i, 4, medio)
             hoja.update_cell(i, 5, "Pagado")
             hoja.update_cell(i, 6, comprobante)
             hoja.update_cell(i, 7, datetime.now().strftime("%d/%m/%Y %H:%M"))
-            monto = fila[2]
             get_hoja().append_row([datetime.now().strftime("%d/%m/%Y %H:%M"), "Gasto", float(monto), servicio])
-            encontrado = True
             await update.message.reply_text(
                 f"✅ <b>Pago registrado</b>\n\n"
-                f"📌 Servicio: {servicio}\n"
-                f"💳 Medio: {medio}\n"
-                f"📎 Comprobante: {comprobante}\n"
-                f"💰 Gasto de ${float(monto):,.0f} anotado en tu balance.",
+                f"📌 {servicio} | 💳 {medio} | 📎 {comprobante}\n"
+                f"💰 ${float(monto):,.0f} anotado.",
                 parse_mode="HTML"
             )
-            break
-    if not encontrado:
-        await update.message.reply_text(
-            f"❌ No encontré el servicio <b>{servicio}</b> pendiente de pago.\n"
-            f"Verificá con /servicios qué tenés cargado.",
-            parse_mode="HTML"
-        )
+            return
+    await update.message.reply_text(f"❌ No encontré {servicio} pendiente.")
 
+# --- CORREGIR ---
+async def corregir(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    hoja = get_hoja()
+    datos = hoja.get_all_values()
+    if len(datos) <= 1:
+        await update.message.reply_text("❌ No hay registros todavía.")
+        return
+    ultimos = list(enumerate(datos[1:], start=2))[-8:]
+    keyboard = []
+    texto = "🗂 <b>ÚLTIMOS REGISTROS</b>\nElegí cuál querés eliminar:\n\n"
+    for idx, fila in ultimos:
+        try:
+            emoji = "🟢" if fila[1] == "Sueldo" else "🔴"
+            monto = float(fila[2])
+            texto += f"{emoji} Fila {idx}: {fila[1]} ${monto:,.0f} - {fila[3]} ({fila[0][:10]})\n"
+            keyboard.append([InlineKeyboardButton(
+                f"❌ {fila[1]} ${monto:,.0f} - {fila[3]}",
+                callback_data=f"eliminar_{idx}"
+            )])
+        except:
+            pass
+    texto += "\n⚠️ <i>Al eliminar, cargá el valor correcto con /sueldo o /gasto</i>"
+    await update.message.reply_text(texto, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+
+# --- BOTONES ---
 async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    if query.data.startswith("iniciar_pago_"):
+    if query.data.startswith("eliminar_"):
+        fila_num = int(query.data.split("_")[1])
+        hoja = get_hoja()
+        datos = hoja.get_all_values()
+        if fila_num <= len(datos):
+            fila = datos[fila_num - 1]
+            hoja.delete_rows(fila_num)
+            await query.edit_message_text(
+                f"✅ Eliminado: {fila[1]} | ${fila[2]} | {fila[3]}\n\n"
+                f"👉 Cargá el correcto con /sueldo o /gasto"
+            )
+    elif query.data.startswith("iniciar_pago_"):
         partes = query.data.split("_")
         fila_num = partes[2]
         servicio = partes[3]
@@ -246,64 +548,73 @@ async def manejar_botones(update: Update, context: ContextTypes.DEFAULT_TYPE):
         hoja.update_cell(fila_num, 7, datetime.now().strftime("%d/%m/%Y %H:%M"))
         get_hoja().append_row([datetime.now().strftime("%d/%m/%Y %H:%M"), "Gasto", float(monto), servicio])
         await query.edit_message_text(
-            f"✅ <b>{servicio} marcado como PAGADO</b>\n\n"
-            f"💳 Medio: {medio}\n"
-            f"💰 Gasto de ${float(monto):,.0f} anotado.\n\n"
-            f"📎 Si tenés comprobante mandalo con:\n"
-            f"<code>/pagar {servicio} {medio} NUMERO_COMPROBANTE</code>",
+            f"✅ <b>{servicio} PAGADO</b>\n💳 {medio} | 💰 ${float(monto):,.0f}\n\n"
+            f"📎 Para agregar comprobante:\n<code>/pagar {servicio} {medio} NUMERO</code>",
             parse_mode="HTML"
         )
 
-async def corregir(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    hoja = get_hoja()
-    datos = hoja.get_all_values()
-    if len(datos) <= 1:
-        await update.message.reply_text("❌ No hay registros cargados todavía.")
-        return
-    ultimos = list(enumerate(datos[1:], start=2))[-8:]
-    keyboard = []
-    texto = "🗂 <b>ÚLTIMOS REGISTROS</b>\nElegí cuál querés eliminar:\n\n"
-    for idx, fila in ultimos:
+# --- AVISOS AUTOMÁTICOS ---
+def chequear_vencimientos():
+    while True:
         try:
-            fecha = fila[0]
-            tipo = fila[1]
-            monto = float(fila[2])
-            concepto = fila[3]
-            emoji = "🟢" if tipo == "Sueldo" else "🔴"
-            texto += f"{emoji} Fila {idx}: {tipo} ${monto:,.0f} - {concepto} ({fecha})\n"
-            keyboard.append([InlineKeyboardButton(
-                f"❌ Eliminar: {tipo} ${monto:,.0f} - {concepto}",
-                callback_data=f"eliminar_{idx}"
-            )])
+            if CHAT_ID:
+                hoy = datetime.now()
+                avisos = []
+                try:
+                    datos_serv = get_hoja("Servicios").get_all_values()
+                    for fila in datos_serv[1:]:
+                        try:
+                            if len(fila) > 4 and fila[4] == "Pagado":
+                                continue
+                            venc = datetime.strptime(fila[1], "%d/%m/%Y")
+                            dias = (venc - hoy).days
+                            if dias in [3, 1, 0]:
+                                nombre = "HOY" if dias == 0 else f"en {dias} día{'s' if dias > 1 else ''}"
+                                avisos.append(f"🔔 <b>{fila[0]}</b> vence <b>{nombre}</b> — ${fila[2]}")
+                        except:
+                            pass
+                except:
+                    pass
+                try:
+                    datos_auto = get_hoja("Auto").get_all_values()
+                    for fila in datos_auto[1:]:
+                        try:
+                            prox = fila[5] if len(fila) > 5 else ""
+                            if not prox or prox.startswith("Próximo"):
+                                continue
+                            venc = datetime.strptime(prox, "%d/%m/%Y")
+                            dias = (venc - hoy).days
+                            if dias in [7, 3, 1, 0]:
+                                nombre = "HOY" if dias == 0 else f"en {dias} día{'s' if dias > 1 else ''}"
+                                avisos.append(f"🚗 <b>{fila[1]}</b> vence <b>{nombre}</b> ({prox})")
+                        except:
+                            pass
+                except:
+                    pass
+                try:
+                    mes_actual = hoy.strftime("%m/%Y")
+                    datos_comida = get_hoja("Comida").get_all_values()
+                    total_comida = 0
+                    for fila in datos_comida[1:]:
+                        try:
+                            if fila[0][3:10] == mes_actual:
+                                total_comida += float(fila[2])
+                        except:
+                            pass
+                    if total_comida >= LIMITE_COMIDA:
+                        avisos.append(f"🛒 <b>¡Superaste el límite de comida!</b> Llevás ${total_comida:,.0f} este mes.")
+                except:
+                    pass
+                if avisos:
+                    mensaje = "⚠️ <b>AVISOS</b> ⚠️\n\n" + "\n".join(avisos)
+                    asyncio.run(
+                        Application.builder().token(TOKEN).build().bot.send_message(
+                            chat_id=CHAT_ID, text=mensaje, parse_mode="HTML"
+                        )
+                    )
         except:
             pass
-    texto += "\n⚠️ <i>Al eliminar, cargá el valor correcto con /sueldo o /gasto</i>"
-    await update.message.reply_text(texto, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def manejar_eliminar(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    if query.data.startswith("eliminar_"):
-        fila_num = int(query.data.split("_")[1])
-        hoja = get_hoja()
-        datos = hoja.get_all_values()
-        if fila_num <= len(datos):
-            fila = datos[fila_num - 1]
-            hoja.delete_rows(fila_num)
-            await query.edit_message_text(
-                f"✅ Registro eliminado:\n"
-                f"{fila[1]} | ${fila[2]} | {fila[3]}\n\n"
-                f"👉 Cargá el valor correcto con /sueldo o /gasto"
-            )
-
-async def recibir_foto(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "📎 Foto recibida.\n\n"
-        "Para asociarla a un servicio usá:\n"
-        "<code>/pagar [servicio] [medio] [descripcion]</code>\n"
-        "Ejemplo: /pagar Luz MercadoPago comprobante-foto",
-        parse_mode="HTML"
-    )
+        time.sleep(43200)
 
 async def mensaje_desconocido(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await start(update, context)
@@ -319,9 +630,12 @@ def build_app():
     app.add_handler(CommandHandler("pagar", pagar_servicio_cmd))
     app.add_handler(CommandHandler("consejo", consejo))
     app.add_handler(CommandHandler("corregir", corregir))
-    app.add_handler(CallbackQueryHandler(manejar_eliminar, pattern="^eliminar_"))
+    app.add_handler(CommandHandler("auto", auto))
+    app.add_handler(CommandHandler("gasto_auto", gasto_auto))
+    app.add_handler(CommandHandler("vencimiento_auto", vencimiento_auto))
+    app.add_handler(CommandHandler("comida", comida))
+    app.add_handler(CommandHandler("gasto_comida", gasto_comida))
     app.add_handler(CallbackQueryHandler(manejar_botones))
-    app.add_handler(MessageHandler(filters.PHOTO, recibir_foto))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, mensaje_desconocido))
     return app
 
@@ -353,4 +667,6 @@ if __name__ == "__main__":
             )
         print("Webhook configurado!")
     asyncio.run(set_webhook())
+    t = threading.Thread(target=chequear_vencimientos, daemon=True)
+    t.start()
     flask_app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
